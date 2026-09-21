@@ -21,7 +21,8 @@
     --lpm:         #1baf7a;   /* linear probability model */
     --lpm-wash:    rgba(27,175,122,0.10);
     --ray:         #4a3aa7;   /* ray-parallel, at target scale */
-    --ray-soft:    #b3aee0;   /* ray-parallel, at echo scale (200K) */
+    --ray-soft:    #9d93cf;   /* ray-parallel, at echo scale (200K) */
+    --ray-mid:     #8073c4;   /* ray-parallel, at 10M rows */
     --ray-wash:    rgba(74,58,167,0.10);
 
     --good:        #0ca30c;
@@ -53,7 +54,8 @@
       --lpm:         #199e70;
       --lpm-wash:    rgba(25,158,112,0.14);
       --ray:         #9085e9;
-      --ray-soft:    #5c5480;
+      --ray-soft:    #6f6796;
+      --ray-mid:     #7d70d6;
       --ray-wash:    rgba(144,133,233,0.14);
 
       --good:        #0ca30c;
@@ -81,7 +83,8 @@
     --lpm:         #199e70;
     --lpm-wash:    rgba(25,158,112,0.14);
     --ray:         #9085e9;
-    --ray-soft:    #5c5480;
+    --ray-soft:    #6f6796;
+    --ray-mid:     #7d70d6;
     --ray-wash:    rgba(144,133,233,0.14);
 
     --good:        #0ca30c;
@@ -231,6 +234,11 @@
   table.data td.model { color: var(--text); font-weight: 600; font-variant-numeric: normal; display: flex; align-items: center; gap: 8px; }
   table.data .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   table.data tr.hi td { color: var(--text); }
+  table.data td.scale-cell {
+    color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums;
+    vertical-align: middle; border-right: 1px solid var(--border-2);
+  }
+  table.data tr.group-start td { border-top: 1px solid var(--border); }
 
   /* ---------- explainer diagram blocks ---------- */
   .analogy {
@@ -426,6 +434,17 @@
     <div class="callout">
       <b>What the fast option actually costs:</b> at 200K–10M rows, capped SGD (5 epochs) fits in a fraction of lbfgs's time — but log-loss nearly <b>triples</b> (0.35 → ~1.0+) and accuracy drops several points. At 20M rows that time advantage nearly disappears too: 30.9s capped vs 27.6s for lbfgs — 5 epochs is simply no longer much cheaper than 7 full lbfgs passes, so you're left paying almost the same bill for meaningfully worse quality. "Just run a few epochs" is a dial that needs re-tuning at every scale, not a fixed shortcut.
     </div>
+
+    <h3 style="font-size:18px; margin-top:52px; margin-bottom:4px;">Every engine, every scale, side by side</h3>
+    <p class="body-text" style="margin-bottom:0;">The same rows as above, all three scales at once — no tab-switching.</p>
+    <div class="table-wrap" style="margin-top:16px;">
+      <table class="data" id="full-data-table">
+        <thead>
+          <tr><th>Rows</th><th>Engine</th><th>Fit time</th><th>Passes</th><th>Accuracy</th><th>AUC</th><th>Log-loss</th><th>Peak RAM Δ</th></tr>
+        </thead>
+        <tbody id="full-table-body"></tbody>
+      </table>
+    </div>
   </div>
 </section>
 
@@ -499,6 +518,7 @@
       </div>
       <div class="legend">
         <span class="item"><span class="sw" style="background:var(--ray-soft)"></span>200,000 rows</span>
+        <span class="item"><span class="sw" style="background:var(--ray-mid)"></span>10,000,000 rows</span>
         <span class="item"><span class="sw" style="background:var(--ray)"></span>20,000,000 rows</span>
         <span class="item"><span class="sw" style="background:var(--muted); height:2px; width:14px; border-radius:0;"></span>Baseline (1× — no speedup)</span>
       </div>
@@ -507,11 +527,22 @@
   </div>
 
   <div class="prose">
-    <p class="body-text" style="margin-top:28px;">At 200K rows, <b>Ray never beat the single-process baseline</b> — the best it managed was 0.51× at 4 workers, i.e. still slower, before falling back to 0.24× at 8 workers as scheduling overhead started competing with actual compute for the same 8 physical cores. At the full 20M-row target, the story flips completely: Ray beats the baseline from 2 workers onward and keeps climbing — <b>2.94× at 4 workers, 3.31× at 8</b> — turning a 2-minute fit into well under 40 seconds.</p>
+    <p class="body-text" style="margin-top:28px;">At 200K rows, <b>Ray never beat the single-process baseline</b> — the best it managed was 0.51× at 4 workers, i.e. still slower, before falling back to 0.24× at 8 workers as scheduling overhead started competing with actual compute for the same 8 physical cores. The crossover happens fast: by <b>10M rows</b> Ray is already decisively ahead, and it's actually the <i>best</i> result on this page — <b>3.81× at 8 workers</b> (57.6s → 15.1s), edging out even the full 20M-row run's 3.31× (122.1s → 36.9s).</p>
     <div class="callout">
-      <b>Why the crossover happens:</b> the fixed per-round overhead (serialization, actor scheduling, the object-store round trip) is roughly <i>constant</i> no matter the data size. At 200K rows each worker's local epochs are too cheap for that overhead to be worth paying. At 20M rows, each worker's local compute is large enough to dwarf that same fixed cost — so the parallelism finally pays for itself. Same code, same machine, opposite verdict — purely a function of scale.
+      <b>Why the crossover happens — and why it doesn't keep climbing:</b> the fixed per-round overhead (serialization, actor scheduling, the object-store round trip) is roughly <i>constant</i> no matter the data size. At 200K rows each worker's local epochs are too cheap for that overhead to be worth paying, so it never wins. Once shards are large enough — somewhere between 200K and 10M rows here — local compute dwarfs that fixed cost and the parallelism pays off in a big way. That the 20M run's speedup is slightly <i>lower</i> than 10M's, not higher, is a reminder that "more rows, more speedup" isn't guaranteed either: 8 workers is still 8 physical cores on one box, and other overheads (larger per-round payloads to serialize and average, memory pressure) can start eating back into the gains once shards get large enough.
     </div>
-    <p class="body-text">The rule of thumb this confirms: reach for Ray's local-SGD-with-averaging once each worker's shard is big enough that local training time clearly exceeds Ray's per-round overhead — which, on this hardware, sits somewhere between 200K and 20M rows. Below that line, the single-process baseline wins outright; above it, more workers keeps paying off, at least up to the 8 cores tested here.</p>
+    <p class="body-text">The rule of thumb this confirms: reach for Ray's local-SGD-with-averaging once each worker's shard is big enough that local training time clearly exceeds Ray's per-round overhead — on this hardware, that line sits somewhere between 200K and 10M rows. Below it, the single-process baseline wins outright; above it, expect a strong, fairly stable multi-x speedup, not one that keeps growing indefinitely with row count.</p>
+
+    <h3 style="font-size:18px; margin-top:44px; margin-bottom:4px;">Every Ray run, every scale</h3>
+    <p class="body-text" style="margin-bottom:0;">Single-process baseline plus all four worker counts, at each scale tested.</p>
+    <div class="table-wrap" style="margin-top:16px;">
+      <table class="data" id="ray-table">
+        <thead>
+          <tr><th>Rows</th><th>Configuration</th><th>Fit time</th><th>Speedup</th><th>Accuracy</th><th>AUC</th><th>Log-loss</th></tr>
+        </thead>
+        <tbody id="ray-table-body"></tbody>
+      </table>
+    </div>
   </div>
 </section>
 
@@ -535,7 +566,7 @@
       </div>
       <div class="decision-row">
         <div class="who"><span class="dot" style="background:var(--ray)"></span>Ray</div>
-        <div class="what">Rows in the tens of millions or beyond, with idle cores to spend. Use local-SGD with periodic averaging, not per-step gradient sync — it turned a 122s fit into 37s (<b>3.3×</b>) at 20M rows on 8 cores here, but was <i>never</i> worth it at 200K rows on the same machine. Check which side of that line your data sits on before reaching for it.</div>
+        <div class="what">Rows in the millions or beyond, with idle cores to spend. Use local-SGD with periodic averaging, not per-step gradient sync — it delivered <b>3.3–3.8×</b> at 10M and 20M rows on 8 cores here (down to 15–37s from 58–122s), but was <i>never</i> worth it at 200K rows on the same machine. Check which side of that line your data sits on before reaching for it.</div>
       </div>
     </div>
   </div>
@@ -587,21 +618,33 @@
 
   var RAY_DATA = {
     200000: {
-      label: "200,000 rows", key: "ray200k", baseline: 0.92,
+      label: "200,000 rows", key: "ray200k",
+      baseline: 0.92,  baseAcc: 0.8133, baseAuc: 0.8983, baseLl: 0.4407,
       points: [
-        { workers: 1, time: 2.806, speedup: 0.329 },
-        { workers: 2, time: 2.066, speedup: 0.446 },
-        { workers: 4, time: 1.806, speedup: 0.511 },
-        { workers: 8, time: 3.883, speedup: 0.238 }
+        { workers: 1, time: 2.806, speedup: 0.329, acc: 0.8128, auc: 0.8987, ll: 0.4395 },
+        { workers: 2, time: 2.066, speedup: 0.446, acc: 0.8151, auc: 0.8989, ll: 0.4988 },
+        { workers: 4, time: 1.806, speedup: 0.511, acc: 0.8226, auc: 0.9090, ll: 0.7011 },
+        { workers: 8, time: 3.883, speedup: 0.238, acc: 0.8315, auc: 0.9152, ll: 1.1457 }
+      ]
+    },
+    10000000: {
+      label: "10,000,000 rows", key: "ray10m",
+      baseline: 57.55, baseAcc: 0.8014, baseAuc: 0.8915, baseLl: 0.4696,
+      points: [
+        { workers: 1, time: 74.525, speedup: 0.772, acc: 0.8093, auc: 0.8959, ll: 0.4470 },
+        { workers: 2, time: 38.235, speedup: 1.505, acc: 0.8076, auc: 0.8941, ll: 0.5254 },
+        { workers: 4, time: 20.957, speedup: 2.746, acc: 0.8286, auc: 0.9137, ll: 0.6211 },
+        { workers: 8, time: 15.116, speedup: 3.807, acc: 0.8283, auc: 0.9134, ll: 1.2159 }
       ]
     },
     20000000: {
-      label: "20,000,000 rows", key: "ray20m", baseline: 122.10,
+      label: "20,000,000 rows", key: "ray20m",
+      baseline: 122.10, baseAcc: 0.8120, baseAuc: 0.8982, baseLl: 0.4325,
       points: [
-        { workers: 1, time: 164.710, speedup: 0.741 },
-        { workers: 2, time: 75.229,  speedup: 1.623 },
-        { workers: 4, time: 41.483,  speedup: 2.943 },
-        { workers: 8, time: 36.897,  speedup: 3.309 }
+        { workers: 1, time: 164.710, speedup: 0.741, acc: 0.8111, auc: 0.8977, ll: 0.4413 },
+        { workers: 2, time: 75.229,  speedup: 1.623, acc: 0.8142, auc: 0.9004, ll: 0.4912 },
+        { workers: 4, time: 41.483,  speedup: 2.943, acc: 0.8229, auc: 0.9084, ll: 0.7031 },
+        { workers: 8, time: 36.897,  speedup: 3.309, acc: 0.8280, auc: 0.9130, ll: 1.1380 }
       ]
     }
   };
@@ -688,6 +731,74 @@
         '<td>' + fmt(r.ll, 3) + "</td>" +
         '<td>' + (r.mem > 0 ? "+" : "") + fmt(r.mem, 2) + " GB</td>";
       tbody.appendChild(tr);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Full engine-comparison table: every scale, every engine, at once.
+  // ---------------------------------------------------------------
+  function renderFullEngineTable() {
+    var tbody = document.getElementById("full-table-body");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    var scales = Object.keys(DATA).filter(function (k) { return DATA[k]; }).map(Number).sort(function (a, b) { return a - b; });
+
+    scales.forEach(function (sc) {
+      var d = DATA[sc];
+      d.rows.forEach(function (r, i) {
+        var tr = document.createElement("tr");
+        if (i === 0) tr.className = "group-start";
+        var scaleCell = i === 0 ? '<td class="scale-cell" rowspan="' + d.rows.length + '">' + d.label.replace(" rows", "") + "</td>" : "";
+        tr.innerHTML =
+          scaleCell +
+          '<td class="model"><span class="dot" style="background:' + COLOR[r.key] + '"></span>' + r.name + "</td>" +
+          '<td>' + (r.time < 1 ? r.time.toFixed(3) : r.time < 60 ? r.time.toFixed(2) : (r.time / 60).toFixed(1) + " min") + (r.time < 60 ? "s" : "") + "</td>" +
+          '<td>' + r.passes + "</td>" +
+          '<td>' + fmt(r.acc * 100, 1) + "%</td>" +
+          '<td>' + fmt(r.auc, 3) + "</td>" +
+          '<td>' + fmt(r.ll, 3) + "</td>" +
+          '<td>' + (r.mem > 0 ? "+" : "") + fmt(r.mem, 2) + " GB</td>";
+        tbody.appendChild(tr);
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Full Ray table: baseline + every worker count, every scale.
+  // ---------------------------------------------------------------
+  function renderFullRayTable() {
+    var tbody = document.getElementById("ray-table-body");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    var scales = Object.keys(RAY_DATA).map(Number).sort(function (a, b) { return a - b; });
+
+    scales.forEach(function (sc) {
+      var rd = RAY_DATA[sc];
+      var rowCount = rd.points.length + 1;
+
+      var baseTr = document.createElement("tr");
+      baseTr.className = "group-start";
+      baseTr.innerHTML =
+        '<td class="scale-cell" rowspan="' + rowCount + '">' + rd.label.replace(" rows", "") + "</td>" +
+        '<td class="model"><span class="dot" style="background:var(--muted)"></span>Single-process (baseline, 20 epochs)</td>' +
+        '<td>' + (rd.baseline < 60 ? rd.baseline.toFixed(2) + "s" : (rd.baseline / 60).toFixed(1) + " min") + "</td>" +
+        '<td>1.00×</td>' +
+        '<td>' + fmt(rd.baseAcc * 100, 1) + "%</td>" +
+        '<td>' + fmt(rd.baseAuc, 3) + "</td>" +
+        '<td>' + fmt(rd.baseLl, 3) + "</td>";
+      tbody.appendChild(baseTr);
+
+      rd.points.forEach(function (pt) {
+        var tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="model"><span class="dot" style="background:' + (sc === 20000000 ? "var(--ray)" : sc === 10000000 ? "var(--ray-mid)" : "var(--ray-soft)") + '"></span>Ray, ' + pt.workers + (pt.workers === 1 ? " worker" : " workers") + "</td>" +
+          '<td>' + (pt.time < 60 ? pt.time.toFixed(2) + "s" : (pt.time / 60).toFixed(1) + " min") + "</td>" +
+          '<td>' + pt.speedup.toFixed(2) + "×</td>" +
+          '<td>' + (pt.acc !== undefined ? fmt(pt.acc * 100, 1) + "%" : "—") + "</td>" +
+          '<td>' + (pt.auc !== undefined ? fmt(pt.auc, 3) : "—") + "</td>" +
+          '<td>' + (pt.ll !== undefined ? fmt(pt.ll, 3) : "—") + "</td>";
+        tbody.appendChild(tr);
+      });
     });
   }
 
@@ -796,7 +907,7 @@
     var padL = 40, padR = 24, padT = 16, padB = 30;
     var plotW = w - padL - padR, plotH = h - padT - padB;
 
-    var scaleKeys = [200000, 20000000];
+    var scaleKeys = [200000, 10000000, 20000000];
     var allSpeedups = [1].concat(scaleKeys.reduce(function (acc, sk) {
       return acc.concat(RAY_DATA[sk].points.map(function (p) { return p.speedup; }));
     }, []));
@@ -831,6 +942,7 @@
 
     var seriesDefs = [
       { key: 200000, color: "var(--ray-soft)" },
+      { key: 10000000, color: "var(--ray-mid)" },
       { key: 20000000, color: "var(--ray)" }
     ];
     var endLabels = [];
@@ -844,10 +956,10 @@
       var last = pts[pts.length - 1];
       endLabels.push({ color: sd.color, x: x(last.workers), y: y(last.speedup) - 12, text: last.speedup.toFixed(2) + "×" });
     });
-    // de-collide the two end-labels (both sit above the 8-worker point) vertically
+    // de-collide end-labels (all sit above the 8-worker point) vertically
     endLabels.sort(function (a, b) { return a.y - b.y; });
     for (var li = 1; li < endLabels.length; li++) {
-      if (endLabels[li - 1].y - endLabels[li].y < 14) endLabels[li].y = endLabels[li - 1].y - 14;
+      if (endLabels[li].y - endLabels[li - 1].y < 14) endLabels[li].y = endLabels[li - 1].y + 14;
     }
     endLabels.forEach(function (lb) {
       var lbl = svgEl("text", { x: lb.x, y: lb.y, "text-anchor": "middle", class: "value-label" });
@@ -882,6 +994,8 @@
     renderRayChart();
   }
   renderAll();
+  renderFullEngineTable();
+  renderFullRayTable();
   window.addEventListener("resize", function () {
     clearTimeout(window.__rt);
     window.__rt = setTimeout(renderAll, 150);
