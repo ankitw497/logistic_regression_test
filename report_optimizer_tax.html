@@ -1,0 +1,903 @@
+<title>The Optimizer Tax</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --surface-2:   #f2f1ec;
+    --text:        #0b0b0b;
+    --text-2:      #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --axis:        #c3c2b7;
+    --border:      rgba(11,11,11,0.10);
+    --border-2:    rgba(11,11,11,0.06);
+
+    --lr:          #2a78d6;   /* logistic regression / lbfgs */
+    --lr-wash:     rgba(42,120,214,0.10);
+    --sgd:         #eb6834;   /* SGD, tol-converged */
+    --sgd-soft:    #f3a37e;   /* SGD, epoch-capped */
+    --sgd-wash:    rgba(235,104,52,0.10);
+    --lpm:         #1baf7a;   /* linear probability model */
+    --lpm-wash:    rgba(27,175,122,0.10);
+    --ray:         #4a3aa7;   /* ray-parallel, at target scale */
+    --ray-soft:    #b3aee0;   /* ray-parallel, at echo scale (200K) */
+    --ray-wash:    rgba(74,58,167,0.10);
+
+    --good:        #0ca30c;
+    --critical:    #d03b3b;
+
+    --radius:      18px;
+    --content-w:   700px;
+    --wide-w:      1040px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:        #0d0d0d;
+      --surface:     #1a1a19;
+      --surface-2:   #212120;
+      --text:        #ffffff;
+      --text-2:      #c3c2b7;
+      --muted:       #898781;
+      --grid:        #2c2c2a;
+      --axis:        #383835;
+      --border:      rgba(255,255,255,0.10);
+      --border-2:    rgba(255,255,255,0.06);
+
+      --lr:          #3987e5;
+      --lr-wash:     rgba(57,135,229,0.14);
+      --sgd:         #d95926;
+      --sgd-soft:    #b97a52;
+      --sgd-wash:    rgba(217,89,38,0.14);
+      --lpm:         #199e70;
+      --lpm-wash:    rgba(25,158,112,0.14);
+      --ray:         #9085e9;
+      --ray-soft:    #5c5480;
+      --ray-wash:    rgba(144,133,233,0.14);
+
+      --good:        #0ca30c;
+      --critical:    #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:        #0d0d0d;
+    --surface:     #1a1a19;
+    --surface-2:   #212120;
+    --text:        #ffffff;
+    --text-2:      #c3c2b7;
+    --muted:       #898781;
+    --grid:        #2c2c2a;
+    --axis:        #383835;
+    --border:      rgba(255,255,255,0.10);
+    --border-2:    rgba(255,255,255,0.06);
+
+    --lr:          #3987e5;
+    --lr-wash:     rgba(57,135,229,0.14);
+    --sgd:         #d95926;
+    --sgd-soft:    #b97a52;
+    --sgd-wash:    rgba(217,89,38,0.14);
+    --lpm:         #199e70;
+    --lpm-wash:    rgba(25,158,112,0.14);
+    --ray:         #9085e9;
+    --ray-soft:    #5c5480;
+    --ray-wash:    rgba(144,133,233,0.14);
+
+    --good:        #0ca30c;
+    --critical:    #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--page);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+  h1, h2, h3, h4 { text-wrap: balance; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+  p { margin: 0; }
+  a { color: inherit; }
+  .tab { font-variant-numeric: tabular-nums; }
+
+  /* ---------- layout shells ---------- */
+  .wrap        { padding-inline: max(20px, calc((100% - var(--wide-w)) / 2)); }
+  .prose       { max-width: var(--content-w); margin-inline: auto; padding-inline: 20px; }
+  .section     { padding-block: 88px; }
+  .section-tint{ background: var(--surface); border-block: 1px solid var(--border-2); }
+  .eyebrow {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 14px; display: block;
+  }
+  .section h2 { font-size: clamp(28px, 4vw, 38px); margin-bottom: 18px; }
+  .lede { font-size: 19px; color: var(--text-2); margin-bottom: 8px; }
+  .body-text { font-size: 16px; color: var(--text-2); }
+  .body-text + .body-text { margin-top: 16px; }
+  .body-text b { color: var(--text); font-weight: 600; }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
+  .inline-code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--surface-2); border: 1px solid var(--border-2);
+    border-radius: 5px; padding: 1px 6px; font-size: 0.86em;
+  }
+
+  /* ---------- nav ---------- */
+  nav.top {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 40;
+    background: color-mix(in srgb, var(--page) 82%, transparent);
+    backdrop-filter: saturate(180%) blur(14px);
+    -webkit-backdrop-filter: saturate(180%) blur(14px);
+    border-bottom: 1px solid var(--border-2);
+  }
+  nav.top .inner {
+    max-width: var(--wide-w); margin-inline: auto; padding: 14px 20px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  nav.top .brand { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+  nav.top .links { display: flex; gap: 22px; overflow-x: auto; scrollbar-width: none; }
+  nav.top .links::-webkit-scrollbar { display: none; }
+  nav.top .links a {
+    font-size: 13px; color: var(--text-2); text-decoration: none; white-space: nowrap;
+    padding-block: 2px; border-bottom: 1px solid transparent; transition: color .15s, border-color .15s;
+  }
+  nav.top .links a:hover { color: var(--text); border-color: var(--lr); }
+
+  /* ---------- hero ---------- */
+  .hero { padding-block: 76px 56px; }
+  .hero .eyebrow { color: var(--lr); }
+  .hero h1 {
+    font-size: clamp(36px, 6vw, 60px); line-height: 1.05; max-width: 900px;
+  }
+  .hero .sub {
+    font-size: clamp(17px, 2vw, 20px); color: var(--text-2); max-width: 620px; margin-top: 22px;
+  }
+  .hero .sub b { color: var(--text); font-weight: 600; }
+
+  .hero-stats {
+    margin-top: 48px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+    background: var(--border-2); border: 1px solid var(--border-2); border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .hero-stat { background: var(--surface); padding: 26px 22px; }
+  .hero-stat .n { font-size: clamp(28px, 4vw, 40px); font-weight: 700; letter-spacing: -0.02em; }
+  .hero-stat .n span.unit { font-size: 0.5em; font-weight: 600; color: var(--muted); margin-left: 2px; }
+  .hero-stat .l { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .hero-stat .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:2px; }
+  @media (max-width: 720px) { .hero-stats { grid-template-columns: 1fr; } }
+
+  /* ---------- three-card model explainer ---------- */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 40px; }
+  @media (max-width: 860px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 26px 24px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .card .tag {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700;
+    letter-spacing: 0.02em; width: fit-content; padding: 5px 11px; border-radius: 100px;
+  }
+  .card .tag .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .card.lr .tag  { background: var(--lr-wash);  color: var(--lr); }
+  .card.sgd .tag { background: var(--sgd-wash); color: var(--sgd); }
+  .card.lpm .tag { background: var(--lpm-wash); color: var(--lpm); }
+  .card h3 { font-size: 20px; }
+  .card .desc { font-size: 14.5px; color: var(--text-2); line-height: 1.55; }
+  .card .desc + .desc { margin-top: 2px; }
+  .card .mech {
+    margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border-2);
+    font-size: 13px; color: var(--muted); line-height: 1.5;
+  }
+  .card .mech b { color: var(--text-2); }
+
+  /* ---------- stat tiles reused for "the numbers" ---------- */
+  .metric-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 28px; }
+  @media (max-width: 860px) { .metric-row { grid-template-columns: repeat(2, 1fr); } }
+  .metric {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 16px 14px;
+  }
+  .metric .k { font-size: 12px; color: var(--muted); display:flex; align-items:center; gap:6px; }
+  .metric .k .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .metric .v { font-size: 21px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .metric .v small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+
+  /* ---------- scale tabs + mini bar chart ---------- */
+  .scale-tabs { display: flex; gap: 8px; margin-top: 44px; flex-wrap: wrap; }
+  .scale-tab {
+    font-size: 13.5px; font-weight: 600; padding: 8px 15px; border-radius: 100px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+    cursor: pointer; transition: all .15s;
+  }
+  .scale-tab[aria-pressed="true"] { background: var(--text); color: var(--page); border-color: var(--text); }
+  .chart-panel {
+    margin-top: 18px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px 24px 10px;
+  }
+  .chart-panel .chart-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; gap: 8px;}
+  .chart-panel .chart-title { font-size: 14px; font-weight: 600; color: var(--text-2); }
+  .chart-panel .chart-note { font-size: 12.5px; color: var(--muted); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 4px; margin-bottom: 6px; }
+  .legend .item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); }
+  .legend .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+  /* ---------- table ---------- */
+  .table-wrap { overflow-x: auto; margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); }
+  table.data { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 640px; }
+  table.data th, table.data td { padding: 11px 16px; text-align: right; border-bottom: 1px solid var(--border-2); white-space: nowrap; }
+  table.data th:first-child, table.data td:first-child { text-align: left; }
+  table.data thead th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; background: var(--surface-2); }
+  table.data tbody tr:last-child td { border-bottom: none; }
+  table.data td { font-variant-numeric: tabular-nums; color: var(--text-2); }
+  table.data td.model { color: var(--text); font-weight: 600; font-variant-numeric: normal; display: flex; align-items: center; gap: 8px; }
+  table.data .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  table.data tr.hi td { color: var(--text); }
+
+  /* ---------- explainer diagram blocks ---------- */
+  .analogy {
+    display: flex; gap: 18px; margin-top: 30px; padding: 22px; border-radius: var(--radius);
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  @media (max-width: 640px) { .analogy { flex-direction: column; } }
+  .analogy .side { flex: 1; }
+  .analogy h4 { font-size: 14.5px; margin-bottom: 8px; }
+  .analogy p { font-size: 14px; color: var(--text-2); line-height: 1.55; }
+  .analogy .divider { width: 1px; background: var(--border); }
+  @media (max-width: 640px) { .analogy .divider { width: 100%; height: 1px; } }
+
+  .formula-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 30px; }
+  @media (max-width: 860px) { .formula-row { grid-template-columns: 1fr; } }
+  .formula-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px;
+  }
+  .formula-card .fdot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right: 8px; }
+  .formula-card .fname { font-size: 13.5px; font-weight: 700; }
+  .formula-card .fexpr {
+    margin-top: 12px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 15px; background: var(--surface-2); border-radius: 8px; padding: 12px 14px;
+    color: var(--text);
+  }
+  .formula-card .fnote { margin-top: 10px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+  .callout {
+    margin-top: 22px; padding: 16px 18px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--surface-2); font-size: 14px; color: var(--text-2); line-height: 1.55;
+  }
+  .callout b { color: var(--text); }
+
+  /* ---------- decision table ---------- */
+  .decision { display: flex; flex-direction: column; gap: 10px; margin-top: 32px; }
+  .decision-row {
+    display: grid; grid-template-columns: 180px 1fr; gap: 18px; padding: 18px 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; align-items: start;
+  }
+  @media (max-width: 640px) { .decision-row { grid-template-columns: 1fr; } }
+  .decision-row .who { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .decision-row .who .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .decision-row .what { font-size: 14px; color: var(--text-2); line-height: 1.55; }
+  .decision-row .what b { color: var(--text); }
+
+  footer.page {
+    padding: 56px 20px 64px; text-align: left;
+  }
+  footer.page .inner { max-width: var(--wide-w); margin-inline: auto; }
+  footer.page p { font-size: 12.5px; color: var(--muted); line-height: 1.6; max-width: 720px; }
+  footer.page p + p { margin-top: 8px; }
+
+  svg.chart text { fill: var(--text-2); font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+  svg.chart .axis-label { fill: var(--muted); }
+  svg.chart .value-label { fill: var(--text); font-weight: 600; font-size: 11.5px; }
+  svg.chart .grid-line { stroke: var(--grid); stroke-width: 1; }
+  svg.chart .baseline { stroke: var(--axis); stroke-width: 1; }
+  svg.chart .ref-line { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 4; fill: none; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+    .reveal.in { opacity: 1; transform: translateY(0); }
+  }
+</style>
+
+<nav class="top">
+  <div class="inner">
+    <div class="brand">The Optimizer Tax</div>
+    <div class="links">
+      <a href="#experiment">Experiment</a>
+      <a href="#models">Three Models</a>
+      <a href="#numbers">The Numbers</a>
+      <a href="#why">Why lbfgs Wins</a>
+      <a href="#scaling">Rows &amp; Features</a>
+      <a href="#ray">Ray</a>
+      <a href="#takeaways">Takeaways</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <span class="eyebrow">A logistic regression benchmark, end to end</span>
+  <h1>Same data. Same answer.<br>Wildly different bills.</h1>
+  <p class="sub">We fit <b>the same binary classifier</b> on the same rows three different ways — a full-batch solver, stochastic gradient descent, and plain linear regression — at <b>200K, 10M and 20M rows</b>, 50 features each. The algorithm everyone reaches for on "big data" was, on this data, the slowest one in the room.</p>
+
+  <div class="hero-stats">
+    <div class="hero-stat">
+      <div class="n tab" style="color:var(--lr)">27.6<span class="unit">sec</span></div>
+      <div class="l"><span class="dot" style="background:var(--lr)"></span>Logistic Regression (lbfgs) · 20M rows, 7 passes</div>
+    </div>
+    <div class="hero-stat">
+      <div class="n tab" style="color:var(--sgd)">4.8<span class="unit">min</span></div>
+      <div class="l"><span class="dot" style="background:var(--sgd)"></span>SGD, run to convergence · 20M rows, 48 epochs</div>
+    </div>
+    <div class="hero-stat">
+      <div class="n tab" style="color:var(--lpm)">17.8<span class="unit">sec</span></div>
+      <div class="l"><span class="dot" style="background:var(--lpm)"></span>Linear Probability Model · 20M rows, closed-form</div>
+    </div>
+  </div>
+</header>
+
+<section class="section" id="experiment">
+  <div class="prose">
+    <span class="eyebrow">The experiment</span>
+    <h2>One dataset, three engines, three scales</h2>
+    <p class="body-text">Every run below fits the same problem: predict a binary outcome from <b>50 numeric features</b>, on <b>200,000 → 10,000,000 → 20,000,000 rows</b> of synthetic data with a known logistic relationship (<code class="inline-code">y ~ Bernoulli(sigmoid(Xβ + noise))</code>) — the noise term keeps the ceiling honest, so no model gets to be perfect.</p>
+    <p class="body-text">Three fitting engines see the <b>exact same train/test split</b> each time:</p>
+    <p class="body-text"><b>Logistic Regression</b> (scikit-learn's <code class="inline-code">lbfgs</code> solver) — the textbook default. <b>SGD Classifier</b> — the one usually recommended once data gets "too big." <b>LPM</b>, a Linear Probability Model — plain linear regression pointed at a 0/1 label, the econometrician's shortcut. All three ran on one 8-core, 17GB laptop — deliberately under-powered next to the 32–64GB cloud machine this experiment is headed for, so it doubles as a stress test.</p>
+  </div>
+</section>
+
+<section class="section section-tint" id="models">
+  <div class="prose" style="max-width: var(--wide-w);">
+    <span class="eyebrow">The mechanics</span>
+    <h2>Three ways to fit a line through probability</h2>
+    <p class="lede" style="max-width:640px;">"Fitting a model" means one thing underneath all three: searching for the coefficients that make a loss function as small as possible. Where they differ is <i>how</i> they search.</p>
+
+    <div class="cards">
+      <div class="card lr">
+        <span class="tag"><span class="dot" style="background:var(--lr)"></span>Engine 1</span>
+        <h3>Logistic Regression — lbfgs</h3>
+        <p class="desc">Models <code class="inline-code">P(y=1) = sigmoid(Xβ)</code> and searches for β by minimizing log-loss.</p>
+        <p class="desc"><b>lbfgs</b> is a quasi-Newton method: alongside the gradient (which way is downhill), it keeps a running estimate of <i>curvature</i> — how the slope itself is changing — built from its last several steps. That extra information lets it aim much further per step than plain gradient descent.</p>
+        <div class="mech"><b>Cost per step:</b> one full pass over every row and every feature. <b>Steps needed here:</b> 7, at every scale tested. <b>Needs:</b> the whole dataset in memory before it can take even one step.</div>
+      </div>
+      <div class="card sgd">
+        <span class="tag"><span class="dot" style="background:var(--sgd)"></span>Engine 2</span>
+        <h3>SGD Classifier</h3>
+        <p class="desc">Same model as Engine 1 — linear score through a sigmoid — a completely different <i>optimizer</i>.</p>
+        <p class="desc">Instead of the exact gradient over all rows, SGD estimates it from small batches and takes an immediate, noisy step. One <b>epoch</b> = one pass through the data doing many of these cheap updates. No curvature information at all — just slope, guessed from a sliver of the data at a time.</p>
+        <div class="mech"><b>Cost per step:</b> nearly free. <b>Steps (epochs) needed here:</b> 49–63 — run to its own convergence tolerance. <b>The other mode:</b> cap the epoch count and stop on a clock instead of a convergence test — cheaper, but you pay for it in quality (see below).</div>
+      </div>
+      <div class="card lpm">
+        <span class="tag"><span class="dot" style="background:var(--lpm)"></span>Engine 3</span>
+        <h3>LPM — Linear Probability Model</h3>
+        <p class="desc">Not a different optimizer — a <i>different model</i>. Fits <code class="inline-code">E[y|X] = Xβ</code> directly, with ordinary least squares. No sigmoid anywhere.</p>
+        <p class="desc">OLS has a <b>closed-form</b> solution — solve one linear system and you're done. No iteration, no convergence criterion, no "how many steps." One shot, every time.</p>
+        <div class="mech"><b>Cost:</b> one linear solve, independent of how separable the classes are. <b>The catch:</b> predictions aren't bounded to [0,1] — 15% of test predictions land outside that range in every run here.</div>
+      </div>
+    </div>
+
+    <div class="analogy">
+      <div class="side">
+        <h4 style="color:var(--lr)">Walking downhill with a map</h4>
+        <p>lbfgs doesn't just feel the slope under its feet — it remembers the shape of the last few hills it crossed, and uses that to guess how the terrain curves ahead. On smooth, well-behaved terrain (like this well-conditioned synthetic data), that lets it take a handful of confident, long strides straight to the bottom.</p>
+      </div>
+      <div class="divider"></div>
+      <div class="side">
+        <h4 style="color:var(--sgd)">Walking downhill blindfolded, one step at a time</h4>
+        <p>SGD only ever feels the slope right under one foot, guessed from a small patch of ground — no memory of the terrain's shape. Each step is instant, but noisy and short, so it takes far more of them to end up in the same place lbfgs reaches directly.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="numbers">
+  <div class="prose" style="max-width: var(--wide-w);">
+    <span class="eyebrow">The observations</span>
+    <h2>The numbers, at every scale</h2>
+    <p class="lede" style="max-width:640px;">lbfgs and LPM land on <b>essentially the same accuracy and AUC</b> at every scale — the difference is entirely in the bill. SGD only matches them if you let it run long enough to actually converge.</p>
+
+    <div class="scale-tabs" role="tablist" aria-label="Choose a data scale">
+      <button class="scale-tab" data-scale="200000" aria-pressed="true">200,000 rows</button>
+      <button class="scale-tab" data-scale="10000000" aria-pressed="false">10,000,000 rows</button>
+      <button class="scale-tab" data-scale="20000000" aria-pressed="false" id="tab-20m">20,000,000 rows</button>
+    </div>
+
+    <div class="chart-panel">
+      <div class="chart-head">
+        <span class="chart-title">Fit time by engine</span>
+        <span class="chart-note" id="chart-note">seconds, linear scale within this panel</span>
+      </div>
+      <div class="legend">
+        <span class="item"><span class="sw" style="background:var(--lr)"></span>Logistic Regression (lbfgs)</span>
+        <span class="item"><span class="sw" style="background:var(--sgd)"></span>SGD (to convergence)</span>
+        <span class="item"><span class="sw" style="background:var(--sgd-soft)"></span>SGD (capped, 5 epochs)</span>
+        <span class="item"><span class="sw" style="background:var(--lpm)"></span>LPM</span>
+      </div>
+      <div id="bar-chart"></div>
+    </div>
+
+    <div class="metric-row" id="metric-row"></div>
+
+    <div class="table-wrap">
+      <table class="data" id="data-table">
+        <thead>
+          <tr><th>Engine</th><th>Fit time</th><th>Passes</th><th>Accuracy</th><th>AUC</th><th>Log-loss</th><th>Peak RAM Δ</th></tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <b>What the fast option actually costs:</b> at 200K–10M rows, capped SGD (5 epochs) fits in a fraction of lbfgs's time — but log-loss nearly <b>triples</b> (0.35 → ~1.0+) and accuracy drops several points. At 20M rows that time advantage nearly disappears too: 30.9s capped vs 27.6s for lbfgs — 5 epochs is simply no longer much cheaper than 7 full lbfgs passes, so you're left paying almost the same bill for meaningfully worse quality. "Just run a few epochs" is a dial that needs re-tuning at every scale, not a fixed shortcut.
+    </div>
+  </div>
+</section>
+
+<section class="section section-tint" id="why">
+  <div class="prose">
+    <span class="eyebrow">Why lbfgs wins here</span>
+    <h2>Wall time is a pass count, multiplied</h2>
+    <p class="body-text">Every one of these algorithms pays the same tax per pass over the data — one matrix multiply touching every row and every feature. What actually decides wall time is <b>how many passes it takes</b>, and that number is a property of the <i>algorithm and the data's conditioning</i>, not of how many rows there are.</p>
+    <p class="body-text">lbfgs needed <b>exactly 7 full-data passes at every single scale tested</b> — 200K, 10M, and 20M rows alike. That's the quasi-Newton curvature estimate paying off: on this well-conditioned synthetic data, it converges in single digits regardless of row count. SGD run to its own tolerance needed <b>63 epochs at 200K, 49 at 10M, 48 at 20M</b> — the count itself barely moves either, it's just pinned roughly seven times higher than lbfgs's, so every pass tax it pays gets multiplied by seven across the board.</p>
+  </div>
+  <div class="prose" style="max-width: var(--wide-w); margin-top:36px;">
+    <div class="chart-panel">
+      <div class="chart-head">
+        <span class="chart-title">Fit time vs. rows, per engine</span>
+        <span class="chart-note">log–log — a straight line means "linear in rows"</span>
+      </div>
+      <div class="legend" id="scaling-legend"></div>
+      <div id="scaling-chart"></div>
+    </div>
+  </div>
+  <div class="prose">
+    <div class="callout">
+      <b>The honest caveat:</b> this synthetic dataset is clean and well-conditioned by design — Gaussian features, a genuine linear-logit signal. Real data with correlated or poorly-scaled features can push lbfgs's iteration count up sharply, while SGD's epoch count is comparatively insensitive to conditioning. The crossover point moves per dataset — benchmark on your real data before assuming lbfgs will win.
+    </div>
+  </div>
+</section>
+
+<section class="section" id="scaling">
+  <div class="prose" style="max-width: var(--wide-w);">
+    <span class="eyebrow">Rows &amp; features</span>
+    <h2>How the engine changes what "more data" costs</h2>
+    <p class="lede" style="max-width:640px;">Rows and features don't hit every engine the same way — the exponent on <i>features</i> is where they genuinely diverge.</p>
+
+    <div class="formula-row">
+      <div class="formula-card">
+        <span class="fdot" style="background:var(--lr)"></span><span class="fname">lbfgs</span>
+        <div class="fexpr">cost ≈ passes × rows × features</div>
+        <div class="fnote">Linear in both. Passes (7 here) stay roughly flat as rows grow — that's what made the 200K→20M scaling near-perfectly linear above.</div>
+      </div>
+      <div class="formula-card">
+        <span class="fdot" style="background:var(--sgd)"></span><span class="fname">SGD</span>
+        <div class="fexpr">cost ≈ epochs × rows × features</div>
+        <div class="fnote">Same shape as lbfgs, bigger multiplier. Epoch count is set by how you configure it — tol-based or capped — not by row count.</div>
+      </div>
+      <div class="formula-card">
+        <span class="fdot" style="background:var(--lpm)"></span><span class="fname">LPM</span>
+        <div class="fexpr">cost ≈ rows × features²</div>
+        <div class="fnote">Linear in rows, <b style="color:var(--text)">quadratic</b> in features — solving the normal equations means inverting a features×features matrix.</div>
+      </div>
+    </div>
+
+    <p class="body-text" style="margin-top:32px;">At 50 features, that quadratic term is invisible — 50² is 2,500, nothing for modern linear algebra. It's why LPM's closed-form solve was competitive with (and at 10M rows, faster than) lbfgs's 7 iterations. Push feature count into the thousands, though, and the picture flips: at 5,000 features the quadratic term is 10,000,000 — LPM's "instant" closed form stops being instant, while lbfgs and SGD's linear-in-features cost barely notices.</p>
+
+    <p class="body-text"><b>Memory scales the same way for all three</b> — <code class="inline-code">rows × features × 4 bytes</code> (float32) to hold the feature matrix once. 20M rows × 50 features is 4GB; that arithmetic is exactly what made the data-generation step earlier in this project worth getting right (a memory-mapped writer that never flushed until the end could momentarily hold the <i>entire</i> file's worth of dirty pages in RAM — get the multiplier wrong once, by using float64 or duplicating the array, and 4GB becomes 8 or 16).</p>
+  </div>
+</section>
+
+<section class="section section-tint" id="ray">
+  <div class="prose">
+    <span class="eyebrow">Parallelizing SGD</span>
+    <h2>Ray loses at echo scale, wins at target scale</h2>
+    <p class="body-text">The obvious way to parallelize SGD is to shard the data across workers and sync a gradient after every mini-batch. For a model with <b>51 numbers</b> to average (50 features + intercept), that's a bad trade: the fixed overhead of serializing, scheduling, and round-tripping through Ray's object store dwarfs the few microseconds of actual compute per step.</p>
+    <p class="body-text">What we tested instead is the pattern real distributed-training systems actually use: <b>local SGD with periodic averaging</b>. Shard the data, let each worker train independently for several epochs with <i>zero</i> communication, then average everyone's weights and (optionally) do another round. We ran it at both ends of this experiment's range — 200K rows and the full 20M-row target — on the same 8-core laptop.</p>
+  </div>
+
+  <div class="prose" style="max-width: var(--wide-w); margin-top:32px;">
+    <div class="chart-panel">
+      <div class="chart-head">
+        <span class="chart-title">Speedup vs. single-process SGD, by worker count</span>
+        <span class="chart-note">baseline = 20 fixed epochs, single process · &gt;1× means Ray was faster</span>
+      </div>
+      <div class="legend">
+        <span class="item"><span class="sw" style="background:var(--ray-soft)"></span>200,000 rows</span>
+        <span class="item"><span class="sw" style="background:var(--ray)"></span>20,000,000 rows</span>
+        <span class="item"><span class="sw" style="background:var(--muted); height:2px; width:14px; border-radius:0;"></span>Baseline (1× — no speedup)</span>
+      </div>
+      <div id="ray-chart"></div>
+    </div>
+  </div>
+
+  <div class="prose">
+    <p class="body-text" style="margin-top:28px;">At 200K rows, <b>Ray never beat the single-process baseline</b> — the best it managed was 0.51× at 4 workers, i.e. still slower, before falling back to 0.24× at 8 workers as scheduling overhead started competing with actual compute for the same 8 physical cores. At the full 20M-row target, the story flips completely: Ray beats the baseline from 2 workers onward and keeps climbing — <b>2.94× at 4 workers, 3.31× at 8</b> — turning a 2-minute fit into well under 40 seconds.</p>
+    <div class="callout">
+      <b>Why the crossover happens:</b> the fixed per-round overhead (serialization, actor scheduling, the object-store round trip) is roughly <i>constant</i> no matter the data size. At 200K rows each worker's local epochs are too cheap for that overhead to be worth paying. At 20M rows, each worker's local compute is large enough to dwarf that same fixed cost — so the parallelism finally pays for itself. Same code, same machine, opposite verdict — purely a function of scale.
+    </div>
+    <p class="body-text">The rule of thumb this confirms: reach for Ray's local-SGD-with-averaging once each worker's shard is big enough that local training time clearly exceeds Ray's per-round overhead — which, on this hardware, sits somewhere between 200K and 20M rows. Below that line, the single-process baseline wins outright; above it, more workers keeps paying off, at least up to the 8 cores tested here.</p>
+  </div>
+</section>
+
+<section class="section" id="takeaways">
+  <div class="prose" style="max-width: var(--wide-w);">
+    <span class="eyebrow">Takeaways</span>
+    <h2>When to reach for each</h2>
+
+    <div class="decision">
+      <div class="decision-row">
+        <div class="who"><span class="dot" style="background:var(--lr)"></span>lbfgs</div>
+        <div class="what">Data fits comfortably in RAM and you want the <b>closest thing to an exact answer</b> with the least tuning. On well-conditioned data, it converges in single-digit passes regardless of row count — the default for a reason.</div>
+      </div>
+      <div class="decision-row">
+        <div class="who"><span class="dot" style="background:var(--sgd)"></span>SGD, capped</div>
+        <div class="what">You have a <b>hard time budget</b>, not a hard quality bar, and rows are too many for full-batch passes to stay cheap. Tune the epoch cap against a validation set — "just run a few epochs" is a dial, and this experiment shows it costs real accuracy if set too low.</div>
+      </div>
+      <div class="decision-row">
+        <div class="who"><span class="dot" style="background:var(--lpm)"></span>LPM</div>
+        <div class="what">You want a <b>fast closed-form baseline</b>, directly interpretable coefficients, or streaming/partial updates — and you can live with predictions occasionally landing outside [0,1] (15% of test rows, here). Stops being "instant" once feature count climbs into the thousands.</div>
+      </div>
+      <div class="decision-row">
+        <div class="who"><span class="dot" style="background:var(--ray)"></span>Ray</div>
+        <div class="what">Rows in the tens of millions or beyond, with idle cores to spend. Use local-SGD with periodic averaging, not per-step gradient sync — it turned a 122s fit into 37s (<b>3.3×</b>) at 20M rows on 8 cores here, but was <i>never</i> worth it at 200K rows on the same machine. Check which side of that line your data sits on before reaching for it.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="page">
+  <div class="inner">
+    <p><b>Methodology.</b> Synthetic data, 50 features, generated from a known logistic relationship with an explicit noise term. All three engines saw the same train/test split at each scale. Timings measured with <code class="inline-code">time.perf_counter()</code> around <code class="inline-code">.fit()</code> only; memory via process RSS delta. Run on one 8-core / 17GB laptop — meaningfully smaller than the 32–64GB cloud target this experiment is built for, so treat exact seconds as directional, not a guarantee on different hardware.</p>
+    <p>Every number on this page came out of three notebooks: synthetic data generation, an scikit-learn engine comparison, and a Ray local-SGD comparison — re-run any of them at a different row count to reproduce or extend what's shown here.</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------
+  // Data captured from real notebook runs.
+  // ---------------------------------------------------------------
+  var DATA = {
+    200000: {
+      label: "200,000 rows",
+      rows: [
+        { name: "Logistic Regression (lbfgs)", key: "lr",  time: 0.073,   passes: "7 iters",  acc: 0.8400, auc: 0.9246, ll: 0.347, mem: 0.068 },
+        { name: "SGD (to convergence)",        key: "sgd", time: 2.913,   passes: "63 epochs",acc: 0.8335, auc: 0.9163, ll: 0.368, mem: 0.000 },
+        { name: "SGD (capped, 5 epochs)",      key: "sgds",time: 0.243,   passes: "5 epochs", acc: 0.7943, auc: 0.8831, ll: 1.010, mem: 0.000 },
+        { name: "LPM",                         key: "lpm", time: 0.117,   passes: "closed-form", acc: 0.8395, auc: 0.9245, ll: 0.387, mem: 0.000 }
+      ]
+    },
+    10000000: {
+      label: "10,000,000 rows",
+      rows: [
+        { name: "Logistic Regression (lbfgs)", key: "lr",  time: 6.578,   passes: "7 iters",  acc: 0.8401, auc: 0.9237, ll: 0.349, mem: 1.294 },
+        { name: "SGD (to convergence)",        key: "sgd", time: 139.274, passes: "49 epochs",acc: 0.8271, auc: 0.9122, ll: 0.378, mem: -4.254 },
+        { name: "SGD (capped, 5 epochs)",      key: "sgds",time: 16.255,  passes: "5 epochs", acc: 0.7772, auc: 0.8632, ll: 1.084, mem: 0.000 },
+        { name: "LPM",                         key: "lpm", time: 5.311,   passes: "closed-form", acc: 0.8402, auc: 0.9237, ll: 0.388, mem: 3.600 }
+      ]
+    },
+    20000000: {
+      label: "20,000,000 rows",
+      rows: [
+        { name: "Logistic Regression (lbfgs)", key: "lr",  time: 27.640,  passes: "7 iters",  acc: 0.8406, auc: 0.9239, ll: 0.348, mem: -5.418 },
+        { name: "SGD (to convergence)",        key: "sgd", time: 285.840, passes: "48 epochs",acc: 0.8261, auc: 0.9115, ll: 0.379, mem: 3.264 },
+        { name: "SGD (capped, 5 epochs)",      key: "sgds",time: 30.923,  passes: "5 epochs", acc: 0.7727, auc: 0.8579, ll: 1.019, mem: 0.000 },
+        { name: "LPM",                         key: "lpm", time: 17.846,  passes: "closed-form", acc: 0.8406, auc: 0.9239, ll: 0.388, mem: -4.107 }
+      ]
+    }
+  };
+
+  var RAY_DATA = {
+    200000: {
+      label: "200,000 rows", key: "ray200k", baseline: 0.92,
+      points: [
+        { workers: 1, time: 2.806, speedup: 0.329 },
+        { workers: 2, time: 2.066, speedup: 0.446 },
+        { workers: 4, time: 1.806, speedup: 0.511 },
+        { workers: 8, time: 3.883, speedup: 0.238 }
+      ]
+    },
+    20000000: {
+      label: "20,000,000 rows", key: "ray20m", baseline: 122.10,
+      points: [
+        { workers: 1, time: 164.710, speedup: 0.741 },
+        { workers: 2, time: 75.229,  speedup: 1.623 },
+        { workers: 4, time: 41.483,  speedup: 2.943 },
+        { workers: 8, time: 36.897,  speedup: 3.309 }
+      ]
+    }
+  };
+
+  var COLOR = { lr: "var(--lr)", sgd: "var(--sgd)", sgds: "var(--sgd-soft)", lpm: "var(--lpm)", ray: "var(--ray)" };
+
+  function fmt(n, d) { d = d === undefined ? 2 : d; return Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); }
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // ---------------------------------------------------------------
+  // Horizontal bar chart: fit time per engine, one scale at a time.
+  // ---------------------------------------------------------------
+  function renderBarChart(scaleKey) {
+    var d = DATA[scaleKey];
+    var host = document.getElementById("bar-chart");
+    host.innerHTML = "";
+    if (!d) {
+      host.innerHTML = '<div style="padding:40px 0;color:var(--muted);font-size:14px;">Still running on the target machine — check back shortly.</div>';
+      return;
+    }
+    var w = Math.max(host.clientWidth || 600, 320), barH = 30, gap = 20, leftPad = 4, rightPad = 66, topPad = 8;
+    var h = d.rows.length * (barH + gap) + topPad;
+    var max = Math.max.apply(null, d.rows.map(function (r) { return r.time; }));
+    var scaleW = w - rightPad - leftPad;
+
+    var svg = svgEl("svg", { class: "chart", width: "100%", height: h, viewBox: "0 0 " + w + " " + h, role: "img", "aria-label": "Fit time by engine, " + d.label });
+
+    d.rows.forEach(function (r, i) {
+      var y = topPad + i * (barH + gap);
+      var bw = Math.max((r.time / max) * scaleW, 3);
+      svg.appendChild(svgEl("rect", { x: leftPad, y: y, width: bw, height: barH, rx: 4, fill: COLOR[r.key] }));
+      var label = svgEl("text", { x: leftPad + bw + 10, y: y + barH / 2 + 4, class: "value-label" });
+      label.textContent = (r.time < 1 ? r.time.toFixed(3) : r.time < 10 ? r.time.toFixed(2) : r.time.toFixed(1)) + "s";
+      svg.appendChild(label);
+      var name = svgEl("text", { x: leftPad + 8, y: y - 7, class: "axis-label" });
+      name.textContent = r.name + "  ·  " + r.passes;
+      svg.appendChild(name);
+    });
+
+    host.appendChild(svg);
+  }
+
+  // ---------------------------------------------------------------
+  // Metric tiles + table for the active scale.
+  // ---------------------------------------------------------------
+  function renderMetricsAndTable(scaleKey) {
+    var d = DATA[scaleKey];
+    var metricHost = document.getElementById("metric-row");
+    var tbody = document.getElementById("table-body");
+    metricHost.innerHTML = "";
+    tbody.innerHTML = "";
+    if (!d) return;
+
+    var best = d.rows.reduce(function (a, b) { return a.time < b.time ? a : b; });
+    var worst = d.rows.reduce(function (a, b) { return a.time > b.time ? a : b; });
+
+    [
+      { k: "Fastest fit", v: best.name.replace(/\s*\(.+?\)/, ""), sub: fmt(best.time, best.time < 1 ? 3 : 2) + "s", key: best.key },
+      { k: "Slowest fit", v: worst.name.replace(/\s*\(.+?\)/, ""), sub: fmt(worst.time, worst.time < 1 ? 3 : 1) + "s", key: worst.key },
+      { k: "Time spread", v: fmt(worst.time / best.time, 0) + "×", sub: "slowest ÷ fastest", key: null },
+      { k: "Rows", v: Number(scaleKey).toLocaleString(), sub: "50 features", key: null }
+    ].forEach(function (m) {
+      var el = document.createElement("div");
+      el.className = "metric";
+      el.innerHTML =
+        '<div class="k">' + (m.key ? '<span class="dot" style="background:' + COLOR[m.key] + '"></span>' : "") + m.k + "</div>" +
+        '<div class="v">' + m.v + " <small>" + m.sub + "</small></div>";
+      metricHost.appendChild(el);
+    });
+
+    d.rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      if (r.key === "lr") tr.className = "hi";
+      tr.innerHTML =
+        '<td class="model"><span class="dot" style="background:' + COLOR[r.key] + '"></span>' + r.name + "</td>" +
+        '<td>' + (r.time < 1 ? r.time.toFixed(3) : r.time.toFixed(2)) + "s</td>" +
+        '<td>' + r.passes + "</td>" +
+        '<td>' + fmt(r.acc * 100, 1) + "%</td>" +
+        '<td>' + fmt(r.auc, 3) + "</td>" +
+        '<td>' + fmt(r.ll, 3) + "</td>" +
+        '<td>' + (r.mem > 0 ? "+" : "") + fmt(r.mem, 2) + " GB</td>";
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Log-log scaling chart: fit time vs N, one line per engine.
+  // ---------------------------------------------------------------
+  function renderScalingChart() {
+    var host = document.getElementById("scaling-chart");
+    var legendHost = document.getElementById("scaling-legend");
+    host.innerHTML = ""; legendHost.innerHTML = "";
+
+    var scales = Object.keys(DATA).filter(function (k) { return DATA[k]; }).map(Number).sort(function(a,b){return a-b;});
+    var series = [
+      { key: "lr", name: "Logistic Regression (lbfgs)" },
+      { key: "sgd", name: "SGD (to convergence)" },
+      { key: "sgds", name: "SGD (capped, 5 epochs)" },
+      { key: "lpm", name: "LPM" }
+    ];
+    series.forEach(function (s) {
+      var item = document.createElement("span");
+      item.className = "item";
+      item.innerHTML = '<span class="sw" style="background:' + COLOR[s.key] + '"></span>' + s.name;
+      legendHost.appendChild(item);
+    });
+
+    var w = Math.max(host.clientWidth || 600, 320), h = 300;
+    var padL = 46, padR = 20, padT = 16, padB = 30;
+    var plotW = w - padL - padR, plotH = h - padT - padB;
+
+    var logMin = Math.log10(1.5e5), logMax = Math.log10(2.5e7);
+    var allTimes = [];
+    scales.forEach(function (sc) { DATA[sc].rows.forEach(function (r) { allTimes.push(r.time); }); });
+    var tMin = Math.log10(Math.min.apply(null, allTimes) * 0.6);
+    var tMax = Math.log10(Math.max.apply(null, allTimes) * 1.6);
+
+    function x(n) { return padL + ((Math.log10(n) - logMin) / (logMax - logMin)) * plotW; }
+    function y(t) { return padT + plotH - ((Math.log10(t) - tMin) / (tMax - tMin)) * plotH; }
+
+    var svg = svgEl("svg", { class: "chart", width: "100%", height: h, viewBox: "0 0 " + w + " " + h, role: "img", "aria-label": "Fit time versus row count, log-log" });
+
+    // gridlines (time decades)
+    var tDecade = Math.floor(tMin);
+    for (var p = tDecade; p <= Math.ceil(tMax); p++) {
+      var yy = y(Math.pow(10, p));
+      if (yy < padT - 1 || yy > padT + plotH + 1) continue;
+      svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: yy, y2: yy, class: "grid-line" }));
+      var lbl = svgEl("text", { x: padL - 8, y: yy + 3, "text-anchor": "end", class: "axis-label" });
+      var val = Math.pow(10, p);
+      lbl.textContent = val >= 1 ? val + "s" : val.toFixed(2) + "s";
+      svg.appendChild(lbl);
+    }
+    scales.forEach(function (sc) {
+      var xx = x(sc);
+      var lbl = svgEl("text", { x: xx, y: padT + plotH + 20, "text-anchor": "middle", class: "axis-label" });
+      lbl.textContent = sc >= 1e6 ? (sc / 1e6) + "M" : (sc / 1e3) + "K";
+      svg.appendChild(lbl);
+    });
+    svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH, class: "baseline" }));
+
+    // draw lines + dots first, collect end-label targets, then de-collide labels vertically
+    var endLabels = [];
+    series.forEach(function (s) {
+      var pts = scales.map(function (sc) {
+        var row = DATA[sc].rows.filter(function (r) { return r.key === s.key; })[0];
+        return { n: sc, t: row.time };
+      });
+      var d = pts.map(function (pt, i) { return (i === 0 ? "M" : "L") + x(pt.n).toFixed(1) + "," + y(pt.t).toFixed(1); }).join(" ");
+      svg.appendChild(svgEl("path", { d: d, fill: "none", stroke: COLOR[s.key], "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+      pts.forEach(function (pt) {
+        svg.appendChild(svgEl("circle", { cx: x(pt.n), cy: y(pt.t), r: 4, fill: COLOR[s.key], stroke: "var(--surface)", "stroke-width": 2 }));
+      });
+      var last = pts[pts.length - 1];
+      endLabels.push({
+        key: s.key,
+        x: x(last.n) + 9,
+        y: y(last.t),
+        text: (last.t < 1 ? last.t.toFixed(2) : last.t < 10 ? last.t.toFixed(1) : Math.round(last.t)) + "s"
+      });
+    });
+
+    // minimum vertical gap between stacked end-labels, closest-to-original-position wins ties
+    var MIN_GAP = 13;
+    endLabels.sort(function (a, b) { return a.y - b.y; });
+    for (var li = 1; li < endLabels.length; li++) {
+      if (endLabels[li].y - endLabels[li - 1].y < MIN_GAP) {
+        endLabels[li].y = endLabels[li - 1].y + MIN_GAP;
+      }
+    }
+    endLabels.forEach(function (lb) {
+      var lbl = svgEl("text", { x: lb.x, y: lb.y + 4, class: "value-label" });
+      lbl.style.fill = COLOR[lb.key];
+      lbl.textContent = lb.text;
+      svg.appendChild(lbl);
+    });
+
+    host.appendChild(svg);
+  }
+
+  // ---------------------------------------------------------------
+  // Ray worker-count chart.
+  // ---------------------------------------------------------------
+  function renderRayChart() {
+    var host = document.getElementById("ray-chart");
+    host.innerHTML = "";
+    var w = Math.max(host.clientWidth || 600, 320), h = 280;
+    var padL = 40, padR = 24, padT = 16, padB = 30;
+    var plotW = w - padL - padR, plotH = h - padT - padB;
+
+    var scaleKeys = [200000, 20000000];
+    var allSpeedups = [1].concat(scaleKeys.reduce(function (acc, sk) {
+      return acc.concat(RAY_DATA[sk].points.map(function (p) { return p.speedup; }));
+    }, []));
+    var sMax = Math.max.apply(null, allSpeedups) * 1.15;
+
+    function x(wcount) { return padL + ((wcount - 1) / (8 - 1)) * plotW; }
+    function y(s) { return padT + plotH - (s / sMax) * plotH; }
+
+    var svg = svgEl("svg", { class: "chart", width: "100%", height: h, viewBox: "0 0 " + w + " " + h, role: "img", "aria-label": "Ray speedup versus worker count, at 200,000 and 20,000,000 rows" });
+
+    var ticks = 4;
+    for (var i = 0; i <= ticks; i++) {
+      var val = (sMax / ticks) * i;
+      var yy = y(val);
+      svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: yy, y2: yy, class: "grid-line" }));
+      var lbl = svgEl("text", { x: padL - 8, y: yy + 3, "text-anchor": "end", class: "axis-label" });
+      lbl.textContent = val.toFixed(1) + "×";
+      svg.appendChild(lbl);
+    }
+    [1, 2, 4, 8].forEach(function (wc) {
+      var lbl = svgEl("text", { x: x(wc), y: padT + plotH + 20, "text-anchor": "middle", class: "axis-label" });
+      lbl.textContent = wc + (wc === 1 ? " worker" : " workers");
+      svg.appendChild(lbl);
+    });
+    svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH, class: "baseline" }));
+
+    // y=1 reference line: baseline parity, no speedup
+    svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: y(1), y2: y(1), class: "ref-line" }));
+    var baseLbl = svgEl("text", { x: padL + plotW, y: y(1) - 6, "text-anchor": "end", class: "axis-label" });
+    baseLbl.textContent = "1× — baseline parity";
+    svg.appendChild(baseLbl);
+
+    var seriesDefs = [
+      { key: 200000, color: "var(--ray-soft)" },
+      { key: 20000000, color: "var(--ray)" }
+    ];
+    var endLabels = [];
+    seriesDefs.forEach(function (sd) {
+      var pts = RAY_DATA[sd.key].points;
+      var d = pts.map(function (pt, i) { return (i === 0 ? "M" : "L") + x(pt.workers).toFixed(1) + "," + y(pt.speedup).toFixed(1); }).join(" ");
+      svg.appendChild(svgEl("path", { d: d, fill: "none", stroke: sd.color, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+      pts.forEach(function (pt) {
+        svg.appendChild(svgEl("circle", { cx: x(pt.workers), cy: y(pt.speedup), r: 4, fill: sd.color, stroke: "var(--surface)", "stroke-width": 2 }));
+      });
+      var last = pts[pts.length - 1];
+      endLabels.push({ color: sd.color, x: x(last.workers), y: y(last.speedup) - 12, text: last.speedup.toFixed(2) + "×" });
+    });
+    // de-collide the two end-labels (both sit above the 8-worker point) vertically
+    endLabels.sort(function (a, b) { return a.y - b.y; });
+    for (var li = 1; li < endLabels.length; li++) {
+      if (endLabels[li - 1].y - endLabels[li].y < 14) endLabels[li].y = endLabels[li - 1].y - 14;
+    }
+    endLabels.forEach(function (lb) {
+      var lbl = svgEl("text", { x: lb.x, y: lb.y, "text-anchor": "middle", class: "value-label" });
+      lbl.style.fill = lb.color;
+      lbl.textContent = lb.text;
+      svg.appendChild(lbl);
+    });
+
+    host.appendChild(svg);
+  }
+
+  // ---------------------------------------------------------------
+  // Wire up scale tabs.
+  // ---------------------------------------------------------------
+  var activeScale = "200000";
+  function setScale(scale) {
+    activeScale = scale;
+    document.querySelectorAll(".scale-tab").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", btn.getAttribute("data-scale") === scale ? "true" : "false");
+    });
+    document.getElementById("chart-note").textContent = DATA[scale] ? "seconds, linear scale within this panel" : "not yet available";
+    renderBarChart(scale);
+    renderMetricsAndTable(scale);
+  }
+  document.querySelectorAll(".scale-tab").forEach(function (btn) {
+    btn.addEventListener("click", function () { setScale(btn.getAttribute("data-scale")); });
+  });
+
+  function renderAll() {
+    setScale(activeScale);
+    renderScalingChart();
+    renderRayChart();
+  }
+  renderAll();
+  window.addEventListener("resize", function () {
+    clearTimeout(window.__rt);
+    window.__rt = setTimeout(renderAll, 150);
+  });
+
+  // ---------------------------------------------------------------
+  // Reveal-on-scroll
+  // ---------------------------------------------------------------
+  document.querySelectorAll(".section").forEach(function (s) { s.classList.add("reveal"); });
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { threshold: 0.08 });
+    document.querySelectorAll(".reveal").forEach(function (s) { io.observe(s); });
+  } else {
+    document.querySelectorAll(".reveal").forEach(function (s) { s.classList.add("in"); });
+  }
+})();
+</script>
