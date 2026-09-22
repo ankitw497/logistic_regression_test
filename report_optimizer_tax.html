@@ -169,6 +169,23 @@
   .hero-stat .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:2px; }
   @media (max-width: 720px) { .hero-stats { grid-template-columns: 1fr; } }
 
+  /* ---------- numbered step list (data generation) ---------- */
+  .steps { display: flex; flex-direction: column; gap: 0; margin-top: 36px; }
+  .step { display: grid; grid-template-columns: 40px 1fr; gap: 18px; padding-block: 18px; }
+  .step + .step { border-top: 1px solid var(--border-2); }
+  .step .num {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--surface-2);
+    border: 1px solid var(--border); color: var(--text-2); font-size: 13px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums;
+  }
+  .step h4 { font-size: 15.5px; margin-bottom: 4px; }
+  .step p { font-size: 14.5px; color: var(--text-2); line-height: 1.55; }
+  .step .step-code {
+    display: inline-block; margin-top: 8px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border-2);
+    border-radius: 6px; padding: 6px 10px; color: var(--text-2);
+  }
+
   /* ---------- three-card model explainer ---------- */
   .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 40px; }
   @media (max-width: 860px) { .cards { grid-template-columns: 1fr; } }
@@ -309,6 +326,7 @@
     <div class="brand">The Optimizer Tax</div>
     <div class="links">
       <a href="#experiment">Experiment</a>
+      <a href="#datagen">The Data</a>
       <a href="#models">Three Models</a>
       <a href="#numbers">The Numbers</a>
       <a href="#why">Why lbfgs Wins</a>
@@ -347,6 +365,82 @@
     <p class="body-text">Every run below fits the same problem: predict a binary outcome from <b>50 numeric features</b>, on <b>200,000 → 10,000,000 → 20,000,000 rows</b> of synthetic data with a known logistic relationship (<code class="inline-code">y ~ Bernoulli(sigmoid(Xβ + noise))</code>) — the noise term keeps the ceiling honest, so no model gets to be perfect.</p>
     <p class="body-text">Three fitting engines see the <b>exact same train/test split</b> each time:</p>
     <p class="body-text"><b>Logistic Regression</b> (scikit-learn's <code class="inline-code">lbfgs</code> solver) — the textbook default. <b>SGD Classifier</b> — the one usually recommended once data gets "too big." <b>LPM</b>, a Linear Probability Model — plain linear regression pointed at a 0/1 label, the econometrician's shortcut. All three ran on one 8-core, 17GB laptop — deliberately under-powered next to the 32–64GB cloud machine this experiment is headed for, so it doubles as a stress test.</p>
+  </div>
+</section>
+
+<section class="section section-tint" id="datagen">
+  <div class="prose">
+    <span class="eyebrow">Where the rows come from</span>
+    <h2>How the synthetic data was made</h2>
+    <p class="lede" style="max-width:640px;">No real dataset behind this — every row is manufactured, on purpose, so the "correct answer" is known and every model can be graded against it.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <div>
+          <h4>Pick the size</h4>
+          <p>Choose how many rows (200,000 → 20,000,000) and how many features per row — 50, fixed for this whole experiment.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <div>
+          <h4>Invent a secret formula</h4>
+          <p>Before generating a single row, pick 50 random "true" weights — one per feature — plus an intercept. These represent how much each feature secretly matters, the way a teacher might secretly decide attendance counts double and guessing counts for nothing, before any student sits the test.</p>
+          <span class="step-code">true_beta = rng.standard_normal(50) * 0.5</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <div>
+          <h4>Roll random features</h4>
+          <p>For every row, draw 50 random numbers from a standard bell curve — most values land near 0, few are extreme. These are the "measurements" a model gets to see.</p>
+          <span class="step-code">X = rng.standard_normal((n_rows, 50))</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <div>
+          <h4>Combine into one score</h4>
+          <p>Multiply each row's 50 features by the secret weights and add them up — a single weighted score per row, like a total exam mark.</p>
+          <span class="step-code">logit = X @ true_beta + intercept</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">5</div>
+        <div>
+          <h4>Add real-world randomness</h4>
+          <p>Add a bit of random noise to that score. This is the important step — it means the outcome is never <i>perfectly</i> predictable from the features, even with the secret weights in hand. Without it, every model would score 100% and this whole experiment would say nothing.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">6</div>
+        <div>
+          <h4>Squash into a probability</h4>
+          <p>Feed the noisy score through the sigmoid function, which turns any number — however large, negative, or extreme — into something between 0% and 100%. High score → probability near 100%; low score → near 0%.</p>
+          <span class="step-code">p = 1 / (1 + exp(-(logit + noise)))</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">7</div>
+        <div>
+          <h4>Flip a weighted coin</h4>
+          <p>For each row, flip a coin biased by that row's probability to get the actual 0/1 label. A row sitting at 90% usually comes up 1 — but not always, same as a real weighted coin.</p>
+          <span class="step-code">y = 1 if rng.random() < p else 0</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">8</div>
+        <div>
+          <h4>Write it to disk a little at a time</h4>
+          <p>Rather than building all 20,000,000 rows in memory at once — which is what made the kernel crash the first time this was tried — generate a few hundred thousand rows, write them straight to disk, then repeat until the file is complete. Peak memory stays flat regardless of how many rows are requested (see <a href="#scaling">Rows &amp; Features</a>).</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:32px;">
+      <b>Why generate fake data at all?</b> Because the "true" relationship between features and outcome is known exactly — step 2's secret weights — every model's coefficients and predictions can be checked against ground truth, not just against each other. It also means the dataset can be regenerated at any size on demand, which is the whole point of an experiment about how fitting time scales with row count.
+    </div>
   </div>
 </section>
 
